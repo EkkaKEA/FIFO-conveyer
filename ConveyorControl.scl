@@ -1,0 +1,120 @@
+﻿FUNCTION_BLOCK "ConveyorControl"
+{ S7_Optimized_Access := 'TRUE' }
+VERSION : 0.1
+   VAR_INPUT 
+      StartButton : Bool;   // пуск/стоп
+      Clear : Bool;   // очистка всей очереди
+      Sensor_1 : Bool;   // датчик на входе
+      Sensor_2 : Bool;   // датчик на выходе
+   END_VAR
+
+   VAR_OUTPUT 
+      M_OUT : Bool;   // запуск двигателя
+      Push : Bool;   // отбраковщик
+   END_VAR
+
+   VAR 
+      ConveyorRunning : Bool;
+      ProductQueue { S7_SetPoint := 'False'} : Array[1..11] of "type_Product";   // Очередь продуктов
+      QueueHead : Int := 1;   // Индекс головы очереди
+      QueueTail : Int := 1;   // Индекс хвоста очереди
+      QueueSize : Int;   // Размер очереди
+      ErrorQueue : Bool;
+      EncoderPosition : UInt;
+      CheckPosition : UInt;
+      OldStartButton : Bool;
+      OldSensor_1 : Bool;
+      OldSensor_2 : Bool;
+   END_VAR
+
+   VAR_TEMP 
+      NewProduct : "type_Product";
+   END_VAR
+
+
+BEGIN
+	
+	
+	REGION _StartStopConveyor_ // запуск и останов конвейера
+	    IF #StartButton = TRUE AND #OldStartButton = FALSE THEN
+	        #ConveyorRunning := NOT #ConveyorRunning; // Переключение состояния конвейера
+	    END_IF;
+	    
+	    IF #QueueSize >= 11 THEN // При переполнении очереди
+	        #ConveyorRunning := FALSE; // останавливаем конвейер
+	        #ErrorQueue := TRUE; // и выставляем ошибку
+	    ELSE
+	        #ErrorQueue := FALSE; // снимаем ошибку при отсутствии переполнения
+	    END_IF;
+	    
+	    IF #ConveyorRunning THEN //приращение энкодера
+	        #EncoderPosition := #EncoderPosition + 1;
+	    END_IF;
+	    
+	    #M_OUT := #ConveyorRunning;
+	    
+	END_REGION
+	
+	REGION _HandleSensorSO1_ // обработка датчика в начале конвейера
+	    IF #ConveyorRunning AND #Sensor_1 = FALSE AND #OldSensor_1 = TRUE THEN
+	        IF #QueueSize < 11 THEN // Проверка на переполнение очереди
+	            #NewProduct.ID := #QueueTail; // Присваивание ID продукту
+	            #NewProduct.Pos := #EncoderPosition; // Получение позиции от энкодера
+	            
+	            IF (#QueueTail MOD 5) = 0 THEN //каждый пятый
+	                #NewProduct.Code := 'NOREAD'; // Присвоение кода продукта
+	                #NewProduct.ErrorID := 1; // Инициализация ошибки продукта
+	            ELSE
+	                #NewProduct.Code := 'GOOD'; // Присвоение кода продукта
+	                #NewProduct.ErrorID := 0; // Инициализация ошибки продукта
+	            END_IF;
+	            
+	            #ProductQueue[#QueueTail] := #NewProduct; // Добавление продукта в очередь
+	            #QueueTail := (#QueueTail MOD 10) + 1; // Обновление индекса хвоста очереди
+	            #QueueSize := #QueueSize + 1; // Увеличение размера очереди
+	                
+	        END_IF;
+	    END_IF;
+	    
+	END_REGION
+	
+	
+	REGION _HandleSensorSO2_ // обработка датчика в конце конвейера
+	    
+	    IF #ConveyorRunning AND #QueueSize > 0  THEN
+	        IF #Sensor_2 = FALSE AND #OldSensor_2 = TRUE THEN
+	            #CheckPosition := (#EncoderPosition + 500); // Позиция для проверки через 500 импульсов
+	        END_IF;
+	        
+	        IF #EncoderPosition = #CheckPosition THEN
+	            IF #ProductQueue[#QueueHead].Code <> 'GOOD' THEN
+	                     // Продукт отбраковывается
+	                    #Push := TRUE; 
+	             END_IF;
+	             #QueueHead := (#QueueHead MOD 10) + 1; // Обновление индекса головы очереди
+	             #QueueSize := #QueueSize - 1; // Уменьшение размера очереди
+	                
+	        END_IF;
+	        
+	        IF #Sensor_2 THEN //втянем толкатель перед следующим продуктом
+	            #Push := FALSE;
+	        END_IF;
+	        
+	        
+	    END_IF;
+	    
+	END_REGION
+	
+	
+	
+	IF #Clear THEN
+	    #QueueHead := 1; // Очистка очереди
+	    #QueueTail := 1;
+	    #QueueSize := 0; // Сброс размера очереди
+	END_IF;
+	
+	#OldStartButton := #StartButton;
+	#OldSensor_1 := #Sensor_1;
+	#OldSensor_2 := #Sensor_2;
+END_FUNCTION_BLOCK
+
